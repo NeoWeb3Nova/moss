@@ -29,6 +29,12 @@ importers:
       '@themoss/erc':
         specifier: workspace:*
         version: link:../../packages/erc
+      '@themoss/protocol-kuru':
+        specifier: workspace:*
+        version: link:../../packages/protocols/kuru
+      '@themoss/simulator':
+        specifier: workspace:*
+        version: link:../../packages/simulator
       '@themoss/system':
         specifier: workspace:*
         version: link:../../packages/system
