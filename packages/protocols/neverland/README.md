@@ -26,7 +26,11 @@ Moss Protocol adapter for [Neverland](https://neverland.finance/) — Monad-nati
 | `setCollateral` | supply* | fundOut | Toggle reserve as collateral |
 | `setEMode` | supply* | fundOut | `categoryId`; `0` disables |
 
-\*Closed Moss verb set has no dedicated “configure” verb; filter by `method` / tags.
+\*Closed Moss verb set has no dedicated “configure” verb. Prefer **`method` / tags**
+(`collateral`, `emode`, `v3`) over `verb: supply` when discovering these ops.
+
+`setCollateral(true)` when the reserve is **already** enabled may emit no new event;
+simulation can then fail Receipt coverage — re-`action` or skip no-op toggles.
 
 ## Queries
 
@@ -40,10 +44,16 @@ Moss Protocol adapter for [Neverland](https://neverland.finance/) — Monad-nati
 
 ## Contracts (Monad mainnet, chainId 143)
 
-| Contract | Address |
-| --- | --- |
-| Pool proxy | `0x80F00661b13CC5F6ccd3885bE7b4C9c67545D585` |
-| PoolDataProvider | `0xfd0b6b6F736376F7B99ee989c749007c7757fDba` |
+| Contract | Address | Source / verification |
+| --- | --- | --- |
+| Pool proxy | `0x80F00661b13CC5F6ccd3885bE7b4C9c67545D585` | Neverland docs + `eth_getCode` on `rpc.monad.xyz` (2026-07-16 / e2e) |
+| PoolDataProvider | `0xfd0b6b6F736376F7B99ee989c749007c7757fDba` | Same; reserve token resolution checked live |
+
+Package labels for known aTokens (e.g. `nUSDC`) are presentation-only; runtime discovery uses `reserveTokens` / PoolDataProvider.
+
+### Amount display note (intent alignment)
+
+USDC on Monad uses **6 decimals**, not 18. ERC-20 Approval Receipt text from `@themoss/erc` prints **base units** (e.g. `1000`), while Neverland Supply text prints **display** (`0.001`). Both refer to the same quantity.
 
 ## Amounts
 

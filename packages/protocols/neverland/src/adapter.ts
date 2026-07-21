@@ -38,7 +38,6 @@ import {
   amountPhrase,
   displayAmount,
   INTEREST_RATE_VARIABLE,
-  KNOWN_ASSET_DECIMALS,
   sameAddress,
 } from "./amounts.js";
 import {
@@ -151,7 +150,10 @@ function jsonSafeArgs(value: unknown): JsonSafeValue {
 
 type ParsedLeaf = ReceiptChange | ReceiptResult<JsonSafeValue>;
 
-function requireErc20(asset: string | typeof NATIVE, action: string): asserts asset is AddressValue {
+function requireErc20(
+  asset: string | typeof NATIVE,
+  action: string,
+): asserts asset is AddressValue {
   if (asset === NATIVE) {
     throw new Error(`Neverland ${action} does not support native MON; wrap to WMON first.`);
   }
@@ -479,7 +481,8 @@ export class Neverland {
             decoded.eventName === "ReserveUsedAsCollateralEnabled" ||
             decoded.eventName === "ReserveUsedAsCollateralDisabled"
           ) {
-            if (primary) throw new Error("Neverland setCollateral emitted multiple collateral events");
+            if (primary)
+              throw new Error("Neverland setCollateral emitted multiple collateral events");
             const enabled = decoded.eventName === "ReserveUsedAsCollateralEnabled";
             primary = {
               operation: "setCollateral",
@@ -684,17 +687,20 @@ export class Neverland {
     change: Extract<Change, { kind: "event" }>,
     onPrimary: (decoded: ReturnType<typeof decodeEventLog<typeof AavePoolAbi>>) => ParsedLeaf,
   ): ParsedLeaf {
+    let decoded: ReturnType<typeof decodeEventLog<typeof AavePoolAbi>>;
     try {
-      const decoded = decodeEventLog({
+      decoded = decodeEventLog({
         abi: AavePoolAbi,
         topics: asHexTopics(change.topics),
         data: change.data,
         strict: true,
       });
-      return onPrimary(decoded);
     } catch {
+      // Only ABI-decode failures become diagnostic leaves.
       return this.#unknownEvent(change);
     }
+    // Semantic failures (duplicate primary events, etc.) must propagate.
+    return onPrimary(decoded);
   }
 
   #poolDiagnostic(

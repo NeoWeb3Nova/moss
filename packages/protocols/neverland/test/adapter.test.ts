@@ -6,20 +6,13 @@ import {
   type JsonSafeValue,
   type MossRuntime,
   type QueryResult,
+  type Receipt,
   Registry,
   type UnsignedTx,
   verifyReceiptCoverage,
 } from "@themoss/core";
 import { ERC20 } from "@themoss/erc";
 import { createTraceSimulator, type SimulateOutcome } from "@themoss/simulator";
-import { extractChanges } from "../../../simulator/src/changes.js";
-import { mergeDiff } from "../../../simulator/src/overrides.js";
-import {
-  DEFAULT_SIMULATION_GAS,
-  type StateOverrides,
-  traceWithCalls,
-  traceWithDiff,
-} from "../../../simulator/src/trace.js";
 import { monadRuntime, USDC_ADDRESS } from "@themoss/system";
 import {
   createPublicClient,
@@ -29,7 +22,15 @@ import {
   parseAbiParameters,
 } from "viem";
 import { describe, expect, it } from "vitest";
-import { AavePoolAbi, ATokenAbi } from "../src/abis/aave.js";
+import { extractChanges } from "../../../simulator/src/changes.js";
+import { mergeDiff } from "../../../simulator/src/overrides.js";
+import {
+  DEFAULT_SIMULATION_GAS,
+  type StateOverrides,
+  traceWithCalls,
+  traceWithDiff,
+} from "../../../simulator/src/trace.js";
+import { AavePoolAbi } from "../src/abis/aave.js";
 import {
   INTEREST_RATE_VARIABLE,
   NEVERLAND_DATA_PROVIDER_ADDRESS,
@@ -54,10 +55,7 @@ function offlineRegistry(): Registry {
   return new Registry(runtime).use(ERC20, Neverland);
 }
 
-function stubReads(
-  registry: Registry,
-  opts: { decimals?: number; allowance?: bigint } = {},
-): void {
+function stubReads(registry: Registry, opts: { decimals?: number; allowance?: bigint } = {}): void {
   const decimals = opts.decimals ?? 6;
   const allowance = opts.allowance ?? 0n;
   (
@@ -105,20 +103,6 @@ function eventTopics(
   }) as readonly Hex[];
 }
 
-function transferChange(
-  token: `0x${string}`,
-  from: `0x${string}`,
-  to: `0x${string}`,
-  value: bigint,
-): Change {
-  return {
-    kind: "event",
-    address: token,
-    topics: eventTopics(ATokenAbi, "Transfer", { from, to }),
-    data: encodeAbiParameters(parseAbiParameters("uint256 value"), [value]),
-  };
-}
-
 function supplyChange(reserve: `0x${string}`, onBehalfOf: `0x${string}`, amount: bigint): Change {
   return {
     kind: "event",
@@ -145,11 +129,7 @@ function withdrawChange(
   };
 }
 
-function borrowChange(
-  reserve: `0x${string}`,
-  onBehalfOf: `0x${string}`,
-  amount: bigint,
-): Change {
+function borrowChange(reserve: `0x${string}`, onBehalfOf: `0x${string}`, amount: bigint): Change {
   return {
     kind: "event",
     address: NEVERLAND_POOL_ADDRESS,
@@ -159,7 +139,9 @@ function borrowChange(
       referralCode: 0,
     }),
     data: encodeAbiParameters(
-      parseAbiParameters("address user, uint256 amount, uint8 interestRateMode, uint256 borrowRate"),
+      parseAbiParameters(
+        "address user, uint256 amount, uint8 interestRateMode, uint256 borrowRate",
+      ),
       [onBehalfOf, amount, 2, 10n ** 25n],
     ),
   };
@@ -265,7 +247,7 @@ async function simulateChained(
         });
         return { results, halted: { transactionIndex: globalIndex, reason } };
       }
-      let receipt;
+      let receipt: Receipt;
       try {
         receipt = registry.parseReceipt(capability, changes);
       } catch (error) {
@@ -313,7 +295,10 @@ async function simulateChained(
 describe("neverland offline shape (v1–v3)", () => {
   it("discovers v1–v3 methods", () => {
     const registry = offlineRegistry();
-    const methods = registry.discover({ protocol: "neverland" }).map((c) => c.method).sort();
+    const methods = registry
+      .discover({ protocol: "neverland" })
+      .map((c) => c.method)
+      .sort();
     expect(methods).toEqual([
       "accountData",
       "borrow",
@@ -330,9 +315,7 @@ describe("neverland offline shape (v1–v3)", () => {
     expect(registry.discover({ verb: "borrow" }).some((c) => c.protocol === "neverland")).toBe(
       true,
     );
-    expect(registry.discover({ verb: "repay" }).some((c) => c.protocol === "neverland")).toBe(
-      true,
-    );
+    expect(registry.discover({ verb: "repay" }).some((c) => c.protocol === "neverland")).toBe(true);
   });
 
   it("builds borrow and repay trees", async () => {
@@ -404,17 +387,21 @@ describe("neverland Receipt coverage (v1–v2)", () => {
     const registry = offlineRegistry();
     const amount = 100_000n;
 
+    const supplyChanges = [supplyChange(USDC_ADDRESS, USER, amount)] as const;
     const supplyReceipt = registry.parseReceipt(
       capabilityNode("supply", { asset: USDC_ADDRESS, amount: "0.1" }),
-      [supplyChange(USDC_ADDRESS, USER, amount)],
+      supplyChanges,
     );
     expect((supplyReceipt.outcome as NeverlandSupplyOutcome).amountDisplay).toBe("0.1");
+    verifyReceiptCoverage(supplyChanges, supplyReceipt);
 
+    const withdrawChanges = [withdrawChange(USDC_ADDRESS, USER, USER, amount)] as const;
     const withdrawReceipt = registry.parseReceipt(
       capabilityNode("withdraw", { asset: USDC_ADDRESS, amount: "0.1", to: USER }),
-      [withdrawChange(USDC_ADDRESS, USER, USER, amount)],
+      withdrawChanges,
     );
     expect((withdrawReceipt.outcome as NeverlandWithdrawOutcome).operation).toBe("withdraw");
+    verifyReceiptCoverage(withdrawChanges, withdrawReceipt);
 
     const borrowChanges = [borrowChange(USDC_ADDRESS, USER, amount)] as const;
     const borrowReceipt = registry.parseReceipt(
@@ -425,11 +412,117 @@ describe("neverland Receipt coverage (v1–v2)", () => {
     expect((borrowReceipt.outcome as NeverlandBorrowOutcome).interestRateMode).toBe(2);
     verifyReceiptCoverage(borrowChanges, borrowReceipt);
 
+    const repayChanges = [repayChange(USDC_ADDRESS, USER, USER, amount)] as const;
     const repayReceipt = registry.parseReceipt(
       capabilityNode("repay", { asset: USDC_ADDRESS, amount: "0.1" }),
-      [repayChange(USDC_ADDRESS, USER, USER, amount)],
+      repayChanges,
     );
     expect(repayReceipt.text).toMatch(/Repaid/);
+    verifyReceiptCoverage(repayChanges, repayReceipt);
+  });
+
+  it("fails when the primary Pool event is missing", () => {
+    const registry = offlineRegistry();
+    const noise: Change = {
+      kind: "event",
+      address: NEVERLAND_POOL_ADDRESS,
+      topics: eventTopics(AavePoolAbi, "ReserveDataUpdated", {
+        reserve: USDC_ADDRESS,
+      }),
+      data: encodeAbiParameters(
+        parseAbiParameters(
+          "uint256 liquidityRate, uint256 stableBorrowRate, uint256 variableBorrowRate, uint256 liquidityIndex, uint256 variableBorrowIndex",
+        ),
+        [0n, 0n, 0n, 0n, 0n],
+      ),
+    };
+    expect(() =>
+      registry.parseReceipt(capabilityNode("supply", { asset: USDC_ADDRESS, amount: "0.1" }), [
+        noise,
+      ]),
+    ).toThrow(/Supply event/);
+    expect(() =>
+      registry.parseReceipt(capabilityNode("borrow", { asset: USDC_ADDRESS, amount: "0.1" }), [
+        noise,
+      ]),
+    ).toThrow(/Borrow event/);
+    expect(() =>
+      registry.parseReceipt(capabilityNode("repay", { asset: USDC_ADDRESS, amount: "0.1" }), [
+        noise,
+      ]),
+    ).toThrow(/Repay event/);
+    expect(() =>
+      registry.parseReceipt(
+        capabilityNode("withdraw", { asset: USDC_ADDRESS, amount: "0.1", to: USER }),
+        [noise],
+      ),
+    ).toThrow(/Withdraw event/);
+  });
+
+  it("fails when primary events are duplicated", () => {
+    const registry = offlineRegistry();
+    const amount = 100_000n;
+    const a = supplyChange(USDC_ADDRESS, USER, amount);
+    const b = supplyChange(USDC_ADDRESS, USER, amount);
+    expect(() =>
+      registry.parseReceipt(capabilityNode("supply", { asset: USDC_ADDRESS, amount: "0.1" }), [
+        a,
+        b,
+      ]),
+    ).toThrow(/multiple Supply/);
+
+    const ba = borrowChange(USDC_ADDRESS, USER, amount);
+    const bb = borrowChange(USDC_ADDRESS, USER, amount);
+    expect(() =>
+      registry.parseReceipt(capabilityNode("borrow", { asset: USDC_ADDRESS, amount: "0.1" }), [
+        ba,
+        bb,
+      ]),
+    ).toThrow(/multiple Borrow/);
+  });
+
+  it("fails coverage when Changes are reordered relative to Receipt leaves", () => {
+    const registry = offlineRegistry();
+    const amount = 100_000n;
+    const first = supplyChange(USDC_ADDRESS, USER, amount);
+    const second: Change = {
+      kind: "event",
+      address: NEVERLAND_POOL_ADDRESS,
+      topics: eventTopics(AavePoolAbi, "ReserveDataUpdated", { reserve: USDC_ADDRESS }),
+      data: encodeAbiParameters(
+        parseAbiParameters(
+          "uint256 liquidityRate, uint256 stableBorrowRate, uint256 variableBorrowRate, uint256 liquidityIndex, uint256 variableBorrowIndex",
+        ),
+        [1n, 2n, 3n, 4n, 5n],
+      ),
+    };
+    const ordered = [second, first] as const;
+    const receipt = registry.parseReceipt(
+      capabilityNode("supply", { asset: USDC_ADDRESS, amount: "0.1" }),
+      ordered,
+    );
+    // Receipt parses successfully, but swapping input order against the same
+    // leaf list violates identity/order coverage.
+    const swapped = [first, second] as const;
+    expect(() => verifyReceiptCoverage(swapped, receipt)).toThrow(/does not retain the original/);
+  });
+});
+
+describe("neverland load contracts", () => {
+  it("exposes separate type schema and field description for borrow/repay", () => {
+    const registry = offlineRegistry();
+    const [borrow] = registry.load([{ protocol: "neverland", method: "borrow" }]);
+    expect(borrow?.params.amount?.description).toMatch(/display units/i);
+    expect(borrow?.params.amount?.type).toBeTruthy();
+    expect(borrow?.params.interestRateMode?.description).toMatch(/variable/i);
+    expect(borrow?.verb).toBe("borrow");
+
+    const [repay] = registry.load([{ protocol: "neverland", method: "repay" }]);
+    expect(repay?.params.asset?.description).toMatch(/debt/i);
+    expect(repay?.risk).toEqual(expect.arrayContaining(["approval", "fundOut"]));
+
+    const [supply] = registry.load([{ protocol: "neverland", method: "supply" }]);
+    expect(supply?.params.amount?.type).not.toEqual(supply?.params.amount?.description);
   });
 });
 
@@ -492,20 +585,15 @@ describe.skipIf(!!process.env.MOSS_SKIP_E2E)("neverland live mainnet e2e (v1–v
       to: USDC_WHALE,
     })) as CapabilityNode;
 
-    const simulation = await simulateChained(runtime, registry, [
-      supply,
-      borrow,
-      repay,
-      withdraw,
-    ]);
+    const simulation = await simulateChained(runtime, registry, [supply, borrow, repay, withdraw]);
     expect(simulation.halted).toBeUndefined();
     expect(simulation.results.every((r) => r.warnings.length === 0)).toBe(true);
     expect(
       simulation.results.some((r) => r.protocol === "neverland" && r.method === "borrow"),
     ).toBe(true);
-    expect(
-      simulation.results.some((r) => r.protocol === "neverland" && r.method === "repay"),
-    ).toBe(true);
+    expect(simulation.results.some((r) => r.protocol === "neverland" && r.method === "repay")).toBe(
+      true,
+    );
     const borrowResult = simulation.results.find((r) => r.method === "borrow");
     expect(borrowResult?.receipt?.outcome).toMatchObject({
       operation: "borrow",
@@ -534,6 +622,15 @@ describe.skipIf(!!process.env.MOSS_SKIP_E2E)("neverland live mainnet e2e (v1–v
     });
     expect(userRes.kind).toBe("query");
     expect((userRes as QueryResult).data).toMatchObject({ decimals: 6 });
+
+    // Package label nUSDC should match live PoolDataProvider aToken for USDC.
+    const tokens = await registry.action("neverland", "reserveTokens", USDC_WHALE, {
+      asset: USDC_ADDRESS,
+    });
+    const aToken = ((tokens as QueryResult).data as { aToken: string }).aToken;
+    expect(aToken.toLowerCase()).toBe("0x38648958836ea88b368b4ac23b86ad44b0fe7508");
+    const aCode = await runtime.client.getCode({ address: aToken as `0x${string}` });
+    expect(aCode && aCode !== "0x").toBe(true);
   });
 
   it("v3 setEMode category 0 (disable)", { timeout: 120_000 }, async () => {

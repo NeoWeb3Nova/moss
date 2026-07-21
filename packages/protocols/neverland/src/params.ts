@@ -1,11 +1,19 @@
-import { Address as AddressSchema, type ParamsSpec, PositiveDecimalString, TokenReference } from "@themoss/core";
+import {
+  Address as AddressSchema,
+  type ParamsSpec,
+  PositiveDecimalString,
+  TokenReference,
+} from "@themoss/core";
 import { z } from "zod/v4";
 
 /** Aave interest rate mode: 1 = stable, 2 = variable (default). */
 export const InterestRateMode = z.coerce
   .number()
   .int()
-  .refine((value) => value === 1 || value === 2, "interestRateMode must be 1 (stable) or 2 (variable)")
+  .refine(
+    (value) => value === 1 || value === 2,
+    "interestRateMode must be 1 (stable) or 2 (variable)",
+  )
   .describe("Aave interest rate mode: 1 = stable, 2 = variable.");
 
 export const EModeCategoryId = z.coerce
@@ -15,9 +23,7 @@ export const EModeCategoryId = z.coerce
   .max(255)
   .describe("Aave eMode category id; 0 disables eMode.");
 
-export const BoolFlag = z
-  .boolean()
-  .describe("Boolean flag.");
+export const BoolFlag = z.boolean().describe("Boolean flag.");
 
 export const amountParams = {
   asset: { type: TokenReference, description: "ERC-20 asset (not native MON)." },
