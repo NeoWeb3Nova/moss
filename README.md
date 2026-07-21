@@ -23,6 +23,7 @@ Moss currently targets Monad mainnet, chain ID `143`.
 | ERC-20 and native MON | `@themoss/erc` | `transfer`, `approve` | `balanceOf`, `allowance`, `metadata` |
 | ERC-721 | `@themoss/erc` | `transfer` | `ownerOf`, `balanceOf` |
 | Kuru | `@themoss/protocol-kuru` | `swap` | `quote` |
+| Neverland | `@themoss/protocol-neverland` | `supply`, `withdraw` | `accountData`, `reserveTokens` |
 
 ## Quickstart
 
@@ -39,6 +40,9 @@ pnpm --filter @themoss/example-simple-flow wrap
 
 # quote and simulate a Kuru MON → USDC swap
 pnpm --filter @themoss/example-simple-flow swap
+
+# simulate Neverland USDC supply (mainnet state, no key)
+pnpm --filter @themoss/example-simple-flow neverland
 
 # after exporting MONADSCAN_API_KEY, fetch a verified full ABI (ADR 0007)
 pnpm fetch-abi 0x1b81D678ffb9C0263b24A97847620C99d213eB14 swapRouter02

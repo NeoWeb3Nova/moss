@@ -60,6 +60,9 @@ importers:
       '@themoss/protocol-kuru':
         specifier: workspace:*
         version: link:../../packages/protocols/kuru
+      '@themoss/protocol-neverland':
+        specifier: workspace:*
+        version: link:../../packages/protocols/neverland
       '@themoss/simulator':
         specifier: workspace:*
         version: link:../../packages/simulator

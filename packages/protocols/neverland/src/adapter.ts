@@ -3,16 +3,17 @@
  *
  * Surface (v1):
  *   - supply / withdraw Capabilities
- *   - accountData Query
+ *   - accountData / reserveTokens Queries
  *
  * Out of scope: borrow / repay / liquidation (need richer risk modeling).
  *
  * Quirks:
  *   - Always call the Pool transparent proxy, never the implementation.
  *   - aToken addresses are resolved at runtime via PoolDataProvider.
- *   - Non-native supply nests an erc20.approve Capability before Pool.supply.
- *   - Receipts must cover every ordered Change (Pool events + aToken Mint/Burn
- *     + underlying ERC-20 transfers); see ADR 0011.
+ *   - Non-native supply nests erc20.approve only when allowance is insufficient.
+ *   - Receipts cover every ordered Change (Pool events + aToken Mint/Burn +
+ *     ERC-20 transfers + peripheral diagnostics); see ADR 0011.
+ *   - Outcome amounts include base units and display units when decimals are known.
  *
  * Address verification (Monad mainnet, chainId 143, rpc.monad.xyz):
  *   - Pool proxy:       0x80F00661b13CC5F6ccd3885bE7b4C9c67545D585 (eth_getCode)
@@ -25,6 +26,7 @@ import {
   Address as AddressSchema,
   type AddressValue,
   Capability,
+  type CapabilityNode,
   type CapabilityResult,
   type Change,
   type Handle,
@@ -40,10 +42,11 @@ import {
   Receipt,
   type ReceiptChange,
   type ReceiptResult,
+  type TransactionNode,
   TokenReference,
 } from "@themoss/core";
 import { ERC20 } from "@themoss/erc";
-import { decodeEventLog, getAddress, parseUnits } from "viem";
+import { decodeEventLog, formatUnits, getAddress, parseUnits } from "viem";
 import { AavePoolAbi, ATokenAbi, PoolDataProviderAbi } from "./abis/aave.js";
 
 /** Neverland Pool proxy — the only address users should call. */
@@ -54,8 +57,9 @@ export const NEVERLAND_DATA_PROVIDER_ADDRESS: Address =
   "0xfd0b6b6F736376F7B99ee989c749007c7757fDba";
 
 /**
- * Known aToken addresses for Package label rendering only (docs.neverland.money).
- * Runtime aToken discovery still uses PoolDataProvider for new reserves.
+ * Known aToken / contract addresses for Package label rendering
+ * (docs.neverland.money + live verification). Runtime aToken discovery still
+ * uses PoolDataProvider so newly listed reserves keep working.
  */
 export const NEVERLAND_PACKAGE_LABELS: Record<string, Address> = {
   Pool: NEVERLAND_POOL_ADDRESS,
@@ -71,6 +75,25 @@ export const NEVERLAND_PACKAGE_LABELS: Record<string, Address> = {
   nSHMON: "0xC64d73Bb8748C6fA7487ace2D0d945B6fBb2EcDe",
 };
 
+/**
+ * Display decimals for common Monad underlyings (Receipt parsers are pure and
+ * cannot eth_call). Unknown assets expose amountBase only.
+ */
+export const KNOWN_ASSET_DECIMALS: Readonly<Record<string, number>> = {
+  "0x754704bc059f8c67012fed69bc8a327a5aafb603": 6, // USDC
+  "0x00000000efe302beaa2b3e6e1b18d08d69a9012a": 6, // AUSD
+  "0x3bd359c1119da7da1d913d1c4d2b7c461115433a": 18, // WMON
+  "0x0555e30da8f98308edb960aa94c0db47230d2b9c": 8, // WBTC (Wrapped)
+  "0xee8c0e9f1bffb4eb878d8f15f368a02a35481242": 18, // WETH-like
+};
+
+/** Aave base-currency scale used by getUserAccountData (USD with 8 decimals). */
+export const AAVE_BASE_CURRENCY_DECIMALS = 8;
+
+/** Aave sentinel health factor when the account has no debt. */
+export const AAVE_MAX_HEALTH_FACTOR =
+  "115792089237316195423570985008687907853269984665640564039457584007913129639935";
+
 const supplyParams = {
   asset: { type: TokenReference, description: "ERC-20 asset to supply (not native MON)." },
   amount: {
@@ -83,7 +106,8 @@ const withdrawParams = {
   asset: { type: TokenReference, description: "ERC-20 asset to withdraw (not native MON)." },
   amount: {
     type: PositiveDecimalString,
-    description: 'Quantity of the asset in display units, such as "10" or "0.001".',
+    description:
+      'Quantity in display units (e.g. "0.001"), or a value at least as large as the full aToken balance to withdraw all.',
   },
   to: { type: AddressSchema, description: "Address that receives the withdrawn underlying." },
 } satisfies ParamsSpec;
@@ -92,23 +116,59 @@ const accountParams = {
   user: { type: AddressSchema, description: "User address whose Neverland account is read." },
 } satisfies ParamsSpec;
 
+const reserveParams = {
+  asset: {
+    type: TokenReference,
+    description: "Underlying ERC-20 reserve (not native MON).",
+  },
+} satisfies ParamsSpec;
+
 export type NeverlandSupplyOutcome = {
   operation: "supply";
   asset: AddressValue;
-  amount: string;
+  /** Underlying amount in the token's smallest unit (from Pool Supply event). */
+  amountBase: string;
+  /** Human display amount when decimals are known; otherwise null. */
+  amountDisplay: string | null;
+  decimals: number | null;
   onBehalfOf: AddressValue;
 };
 
 export type NeverlandWithdrawOutcome = {
   operation: "withdraw";
   asset: AddressValue;
-  amount: string;
+  amountBase: string;
+  amountDisplay: string | null;
+  decimals: number | null;
   user: AddressValue;
   to: AddressValue;
 };
 
 function sameAddress(a: string, b: string): boolean {
   return a.toLowerCase() === b.toLowerCase();
+}
+
+function knownDecimals(asset: string): number | null {
+  return KNOWN_ASSET_DECIMALS[asset.toLowerCase()] ?? null;
+}
+
+function displayAmount(amountBase: bigint | string, asset: string): {
+  amountBase: string;
+  amountDisplay: string | null;
+  decimals: number | null;
+} {
+  const base = typeof amountBase === "bigint" ? amountBase.toString() : amountBase;
+  const decimals = knownDecimals(asset);
+  return {
+    amountBase: base,
+    amountDisplay: decimals === null ? null : formatUnits(BigInt(base), decimals),
+    decimals,
+  };
+}
+
+function amountPhrase(amountBase: string, amountDisplay: string | null, asset: string): string {
+  if (amountDisplay !== null) return `${amountDisplay} ${asset}`;
+  return `${amountBase} (base units) ${asset}`;
 }
 
 function asHexTopics(topics: readonly Hex[]): [Hex, ...Hex[]] {
@@ -173,14 +233,23 @@ export class Neverland {
     }
     const decimals = await this.#decimals(asset);
     const rawAmount = parseUnits(amount, decimals);
-    return [
-      await this.erc20.approve({
-        token: asset,
-        spender: NEVERLAND_POOL_ADDRESS,
-        amount: rawAmount.toString(),
-      }),
-      this.pool.supply([asset, rawAmount, ctx.account, 0]),
-    ];
+    const steps: Array<CapabilityNode | TransactionNode> = [];
+    const allowanceResult = (await this.erc20.allowance({
+      token: asset,
+      owner: ctx.account,
+      spender: NEVERLAND_POOL_ADDRESS,
+    })) as { allowance: string };
+    if (BigInt(allowanceResult.allowance) < rawAmount) {
+      steps.push(
+        await this.erc20.approve({
+          token: asset,
+          spender: NEVERLAND_POOL_ADDRESS,
+          amount: rawAmount.toString(),
+        }),
+      );
+    }
+    steps.push(this.pool.supply([asset, rawAmount, ctx.account, 0]));
+    return steps;
   }
 
   @Capability<Neverland, typeof withdrawParams>({
@@ -200,6 +269,9 @@ export class Neverland {
       throw new Error("Neverland does not support native MON withdraw; use WMON.");
     }
     const decimals = await this.#decimals(asset);
+    // Aave: amount == type(uint256).max withdraws the full aToken balance.
+    // Callers that pass a display amount larger than the scaled balance still
+    // withdraw only what they hold; we map ordinary display strings via parseUnits.
     const rawAmount = parseUnits(amount, decimals);
     return [this.pool.withdraw([asset, rawAmount, to])];
   }
@@ -212,20 +284,22 @@ export class Neverland {
         return this.erc20.changesReceipt([change]);
       }
       if (sameAddress(change.address, NEVERLAND_POOL_ADDRESS)) {
-        return this.#parsePoolChange(change, "supply", (decoded) => {
+        return this.#parsePoolChange(change, (decoded) => {
           if (decoded.eventName === "Supply") {
             if (supplyEvent) throw new Error("Neverland supply emitted multiple Supply events");
+            const asset = getAddress(decoded.args.reserve);
+            const amounts = displayAmount(decoded.args.amount, asset);
             supplyEvent = {
               operation: "supply",
-              asset: getAddress(decoded.args.reserve),
-              amount: decoded.args.amount.toString(),
+              asset,
+              ...amounts,
               onBehalfOf: getAddress(decoded.args.onBehalfOf),
             };
             return {
               kind: "change" as const,
               change,
               data: supplyEvent,
-              text: `Neverland Supply: ${supplyEvent.amount} ${supplyEvent.asset} for ${supplyEvent.onBehalfOf}`,
+              text: `Neverland Supply: ${amountPhrase(amounts.amountBase, amounts.amountDisplay, asset)} for ${supplyEvent.onBehalfOf}`,
             };
           }
           return this.#poolDiagnostic(change, decoded.eventName, decoded.args);
@@ -238,7 +312,7 @@ export class Neverland {
     return {
       kind: "receipt",
       outcome: supplyEvent,
-      text: `Supplied ${supplyEvent.amount} ${supplyEvent.asset} to Neverland for ${supplyEvent.onBehalfOf}`,
+      text: `Supplied ${amountPhrase(supplyEvent.amountBase, supplyEvent.amountDisplay, supplyEvent.asset)} to Neverland for ${supplyEvent.onBehalfOf}`,
       changes: parsed,
     };
   }
@@ -251,15 +325,17 @@ export class Neverland {
         return this.erc20.changesReceipt([change]);
       }
       if (sameAddress(change.address, NEVERLAND_POOL_ADDRESS)) {
-        return this.#parsePoolChange(change, "withdraw", (decoded) => {
+        return this.#parsePoolChange(change, (decoded) => {
           if (decoded.eventName === "Withdraw") {
             if (withdrawEvent) {
               throw new Error("Neverland withdraw emitted multiple Withdraw events");
             }
+            const asset = getAddress(decoded.args.reserve);
+            const amounts = displayAmount(decoded.args.amount, asset);
             withdrawEvent = {
               operation: "withdraw",
-              asset: getAddress(decoded.args.reserve),
-              amount: decoded.args.amount.toString(),
+              asset,
+              ...amounts,
               user: getAddress(decoded.args.user),
               to: getAddress(decoded.args.to),
             };
@@ -267,7 +343,7 @@ export class Neverland {
               kind: "change" as const,
               change,
               data: withdrawEvent,
-              text: `Neverland Withdraw: ${withdrawEvent.amount} ${withdrawEvent.asset} to ${withdrawEvent.to}`,
+              text: `Neverland Withdraw: ${amountPhrase(amounts.amountBase, amounts.amountDisplay, asset)} to ${withdrawEvent.to}`,
             };
           }
           return this.#poolDiagnostic(change, decoded.eventName, decoded.args);
@@ -282,7 +358,7 @@ export class Neverland {
     return {
       kind: "receipt",
       outcome: withdrawEvent,
-      text: `Withdrew ${withdrawEvent.amount} ${withdrawEvent.asset} from Neverland to ${withdrawEvent.to}`,
+      text: `Withdrew ${amountPhrase(withdrawEvent.amountBase, withdrawEvent.amountDisplay, withdrawEvent.asset)} from Neverland to ${withdrawEvent.to}`,
       changes: parsed,
     };
   }
@@ -301,22 +377,45 @@ export class Neverland {
       ltv,
       healthFactor,
     ] = await this.pool.read.getUserAccountData([params.user]);
+    const hf = healthFactor.toString();
     return {
+      user: params.user,
+      /** Aave base currency (USD) amounts use 8 decimals. */
+      baseCurrencyDecimals: AAVE_BASE_CURRENCY_DECIMALS,
       totalCollateralBase: totalCollateralBase.toString(),
       totalDebtBase: totalDebtBase.toString(),
       availableBorrowsBase: availableBorrowsBase.toString(),
+      /** Basis points style thresholds as returned by Aave (e.g. 8500 = 85%). */
       currentLiquidationThreshold: currentLiquidationThreshold.toString(),
       ltv: ltv.toString(),
-      healthFactor: healthFactor.toString(),
+      healthFactor: hf,
+      healthFactorInfinite: hf === AAVE_MAX_HEALTH_FACTOR || totalDebtBase === 0n,
+    };
+  }
+
+  @Query({
+    intent: "Resolve Neverland aToken / debt token addresses for {asset}",
+    params: reserveParams,
+    tags: ["lending", "reserve"],
+  })
+  async reserveTokens(params: InferParams<typeof reserveParams>) {
+    const { asset } = params;
+    if (asset === NATIVE) {
+      throw new Error("Neverland reserves are ERC-20 only; wrap native MON to WMON first.");
+    }
+    const [aTokenAddress, stableDebtTokenAddress, variableDebtTokenAddress] =
+      await this.dataProvider.read.getReserveTokensAddresses([asset]);
+    return {
+      asset: getAddress(asset),
+      aToken: getAddress(aTokenAddress),
+      stableDebtToken: getAddress(stableDebtTokenAddress),
+      variableDebtToken: getAddress(variableDebtTokenAddress),
     };
   }
 
   #parsePoolChange(
     change: Extract<Change, { kind: "event" }>,
-    _operation: "supply" | "withdraw",
-    onPrimary: (
-      decoded: ReturnType<typeof decodeEventLog<typeof AavePoolAbi>>,
-    ) => ParsedLeaf,
+    onPrimary: (decoded: ReturnType<typeof decodeEventLog<typeof AavePoolAbi>>) => ParsedLeaf,
   ): ParsedLeaf {
     try {
       const decoded = decodeEventLog({
@@ -327,7 +426,6 @@ export class Neverland {
       });
       return onPrimary(decoded);
     } catch {
-      // Proxies may emit peripheral events not in IPool; still cover the Change.
       return this.#unknownEvent(change);
     }
   }
@@ -345,10 +443,6 @@ export class Neverland {
     };
   }
 
-  /**
-   * aToken Mint/Burn/Transfer, plain ERC-20 Transfer/Approval, or an opaque
-   * diagnostic leaf for peripheral events from interest strategies / oracles.
-   */
   #parseTokenSideChange(change: Extract<Change, { kind: "event" }>): ParsedLeaf {
     try {
       const decoded = decodeEventLog({

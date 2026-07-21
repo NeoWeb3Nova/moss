@@ -15,6 +15,7 @@ declare const dependency: ProtocolRef<Neverland>;
 void neverland.supply({ asset: USDC_ADDRESS, amount: "1" }, ctx);
 void neverland.withdraw({ asset: USDC_ADDRESS, amount: "1", to: USDC_ADDRESS }, ctx);
 void neverland.accountData({ user: USDC_ADDRESS });
+void neverland.reserveTokens({ asset: USDC_ADDRESS });
 void neverland.supplyReceipt([]);
 void neverland.withdrawReceipt([]);
 
@@ -28,6 +29,6 @@ void badAmount;
 // @ts-expect-error ProtocolRef exposes methods, not contract Handles
 void dependency.pool;
 
-// Injected dependency Capabilities / Receipts are callable.
 void dependency.supply;
+void dependency.reserveTokens;
 void dependency.supplyReceipt;
