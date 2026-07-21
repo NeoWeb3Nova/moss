@@ -1,0 +1,12 @@
+{
+  "name": "@aave/core-v3",
+  "version": "1.19.3",
+  "tarballSha256": "a7bd560885fa804a5233ceb8f9c4da4ef3336246590b6f35e4eaedef044a8679",
+  "vendoredAt": "2026-07-21",
+  "releaseAgeGuardDays": 7,
+  "files": [
+    "artifacts/contracts/interfaces/IPool.sol/IPool.json",
+    "artifacts/contracts/interfaces/IPoolDataProvider.sol/IPoolDataProvider.json",
+    "artifacts/contracts/interfaces/IAToken.sol/IAToken.json"
+  ]
+}
