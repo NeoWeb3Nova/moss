@@ -3,10 +3,9 @@
 "@themoss/mcp-server": patch
 ---
 
-Add complete Neverland Protocol adapter (Capability/Receipt)
+Add Neverland Protocol adapter v1–v3 (Capability/Receipt)
 
-Introduces `@themoss/protocol-neverland` for the Neverland Aave V3 market on
-Monad: `supply` / `withdraw` Capabilities (approve only when needed),
-`accountData` and `reserveTokens` Queries, exhaustive Receipt parsers with
-base + display amounts, ADR 0007 vendored full Aave ABIs, MCP composition,
-and live mainnet e2e including a supply→withdraw state-chained loop.
+Full user-facing Neverland (Aave V3) surface on Monad: supply/withdraw (v1),
+borrow/repay (v2), collateral/eMode toggles plus reserve queries (v3), smart
+approvals, display-unit receipts, ADR 0007 full Aave ABIs, MCP composition,
+and live mainnet e2e including supply→borrow→repay→withdraw.

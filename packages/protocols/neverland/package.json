@@ -22,7 +22,8 @@
   "dependencies": {
     "@themoss/core": "workspace:*",
     "@themoss/erc": "workspace:*",
-    "viem": "^2.54.3"
+    "viem": "^2.54.3",
+    "zod": "^3.25.0"
   },
   "devDependencies": {
     "@themoss/simulator": "workspace:*",

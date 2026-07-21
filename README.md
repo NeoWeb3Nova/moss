@@ -23,7 +23,7 @@ Moss currently targets Monad mainnet, chain ID `143`.
 | ERC-20 and native MON | `@themoss/erc` | `transfer`, `approve` | `balanceOf`, `allowance`, `metadata` |
 | ERC-721 | `@themoss/erc` | `transfer` | `ownerOf`, `balanceOf` |
 | Kuru | `@themoss/protocol-kuru` | `swap` | `quote` |
-| Neverland | `@themoss/protocol-neverland` | `supply`, `withdraw` | `accountData`, `reserveTokens` |
+| Neverland | `@themoss/protocol-neverland` | `supply`, `withdraw`, `borrow`, `repay`, `setCollateral`, `setEMode` | `accountData`, `reserveTokens`, `userReserveData`, `reserveConfig`, `reservesList` |
 
 ## Quickstart
 

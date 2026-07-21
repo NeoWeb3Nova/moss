@@ -1,11 +1,17 @@
 export {
   AAVE_BASE_CURRENCY_DECIMALS,
   AAVE_MAX_HEALTH_FACTOR,
+  INTEREST_RATE_STABLE,
+  INTEREST_RATE_VARIABLE,
   KNOWN_ASSET_DECIMALS,
   NEVERLAND_DATA_PROVIDER_ADDRESS,
   NEVERLAND_PACKAGE_LABELS,
   NEVERLAND_POOL_ADDRESS,
   Neverland,
+  type NeverlandBorrowOutcome,
+  type NeverlandCollateralOutcome,
+  type NeverlandEModeOutcome,
+  type NeverlandRepayOutcome,
   type NeverlandSupplyOutcome,
   type NeverlandWithdrawOutcome,
 } from "./adapter.js";
