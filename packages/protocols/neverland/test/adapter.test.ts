@@ -1,27 +1,26 @@
 import {
+  type CapabilityNode,
+  type Change,
+  flattenCapabilityTree,
   type MossRuntime,
-  type Plan,
-  type PlanObservation,
   type QueryResult,
   Registry,
 } from "@themoss/core";
+import { ERC20 } from "@themoss/erc";
 import { createTraceSimulator } from "@themoss/simulator";
-import { monadRuntime, systemManifest } from "@themoss/system";
+import { monadRuntime, USDC_ADDRESS } from "@themoss/system";
+import { createPublicClient, http } from "viem";
 import { describe, expect, it } from "vitest";
-import { NEVERLAND_POOL_ADDRESS, neverlandManifest } from "../src/index.js";
+import { NEVERLAND_POOL_ADDRESS, Neverland } from "../src/index.js";
 
 const ACCOUNT = "0x0000000000000000000000000000000000000001";
 
 function offlineRegistry(): Registry {
   const runtime: MossRuntime = {
-    chainId: 143,
     rpcUrl: "http://offline",
-    // biome-ignore lint/suspicious/noExplicitAny: reads unused in offline tests
-    client: {} as any,
+    client: createPublicClient({ transport: http("http://offline") }),
   };
-  const registry = new Registry(runtime);
-  registry.use(systemManifest);
-  registry.use(neverlandManifest);
+  const registry = new Registry(runtime).use(ERC20, Neverland);
   return registry;
 }
 
@@ -42,41 +41,48 @@ describe("neverland adapter (offline shape)", () => {
     expect(Object.keys(stub?.params ?? {})).toEqual(["asset", "amount"]);
   });
 
-  it("builds a supply plan with an approval step and quantified expects", async () => {
+  it("builds a supply capability with an approval transaction", async () => {
     const registry = offlineRegistry();
-    // The supply capability needs the aToken address to quantify the "in" flow.
-    // Offline we have no RPC, so we stub readContract; the shape test still
-    // validates that the adapter emits two steps and declares approval/out/in.
     const aTokenAddress = "0x1111111111111111111111111111111111111111";
     (
       registry.runtime.client as {
         // biome-ignore lint/suspicious/noExplicitAny: minimal RPC stub for offline shape testing
         readContract: any;
       }
-    ).readContract = async () => [
-      aTokenAddress,
-      "0x0000000000000000000000000000000000000000",
-      "0x0000000000000000000000000000000000000000",
-    ];
+    ).readContract = async ({ functionName }: { functionName: string }) => {
+      if (functionName === "getReserveTokensAddresses") {
+        return [aTokenAddress, "0x0000000000000000000000000000000000000000", "0x0000000000000000000000000000000000000000"];
+      }
+      if (functionName === "decimals") return 6;
+      if (functionName === "name") return "USD Coin";
+      if (functionName === "symbol") return "USDC";
+      throw new Error(`unexpected readContract: ${functionName}`);
+    };
     const built = (await registry.action("neverland", "supply", ACCOUNT, {
-      asset: "USDC",
+      asset: USDC_ADDRESS,
       amount: "10",
-    })) as Plan;
-    expect(built.txs).toHaveLength(2);
-    expect(built.txs[1]?.to).toBe(NEVERLAND_POOL_ADDRESS);
-    expect(built.expects.approvals).toHaveLength(1);
-    expect(built.expects.out?.[0]?.token).toMatch(/^0x[0-9a-f]{40}$/i);
-    expect(built.expects.in?.[0]?.token).toBe(aTokenAddress);
-    expect(built.planHash).toMatch(/^0x[0-9a-f]{64}$/);
+    })) as CapabilityNode;
+    const flat = flattenCapabilityTree(built);
+    expect(flat).toHaveLength(2);
+    expect(flat[1]?.transaction.to).toBe(NEVERLAND_POOL_ADDRESS);
+  });
+
+  it("rejects native MON supply", async () => {
+    const registry = offlineRegistry();
+    await expect(
+      registry.action("neverland", "supply", ACCOUNT, { asset: "native", amount: "1" }),
+    ).rejects.toThrow("native MON");
   });
 });
 
-describe.skipIf(!!process.env.MOSS_SKIP_E2E)("neverland adapter (Monad mainnet e2e)", () => {
-  const runtime = monadRuntime();
-  const registry = new Registry(runtime);
-  registry.use(systemManifest);
-  registry.use(neverlandManifest);
-  const simulator = createTraceSimulator(runtime, { observer: registry.observer() });
+describe.skipIf(!!process.env.MOSS_SKIP_E2E)("neverland adapter (Monad mainnet e2e)", async () => {
+  const runtime = await monadRuntime();
+  const registry = new Registry(runtime, {
+    trustedTokens: [{ address: USDC_ADDRESS, label: "USDC" }],
+  }).use(ERC20, Neverland);
+  const simulator = createTraceSimulator(runtime, {
+    receipt: (capability: CapabilityNode, changes: readonly Change[]) => registry.parseReceipt(capability, changes),
+  });
 
   // A Monad mainnet account that holds USDC and has not interacted with the
   // Neverland pool in this trace. The simulator prefunds native gas; the USDC
@@ -84,19 +90,19 @@ describe.skipIf(!!process.env.MOSS_SKIP_E2E)("neverland adapter (Monad mainnet e
   const USDC_WHALE = "0xe52b14240514e7a05ddda336cff0d99ce8bb7230";
 
   it("supplies 0.001 USDC with zero warnings", { timeout: 120_000 }, async () => {
-    const plan = (await registry.action("neverland", "supply", USDC_WHALE, {
-      asset: "USDC",
+    const capability = (await registry.action("neverland", "supply", USDC_WHALE, {
+      asset: USDC_ADDRESS,
       amount: "0.001",
-    })) as Plan;
+    })) as CapabilityNode;
 
-    const { results, halted } = await simulator.simulate([plan]);
-    expect(halted).toBeUndefined();
-    const [result] = results;
-    expect(result?.reverted).toBe(false);
+    const simulation = await simulator.simulate(capability);
+    expect(simulation.halted).toBe(false);
+    const result = simulation.results.at(-1);
+    expect(result?.protocol).toBe("neverland");
+    expect(result?.method).toBe("supply");
+    expect(result?.receipt).toBeDefined();
     expect(result?.warnings).toEqual([]);
-
-    const receipt = result?.observations.find((o: PlanObservation) => o.name === "supplyReceipt");
-    expect(receipt?.intent).toMatch(/^Supplied [\d.]+ USDC to Neverland$/);
+    expect(result?.receipt?.text).toMatch(/^Supplied [\d.]+ .* to Neverland$/);
   });
 
   it("reads live account data for the whale", { timeout: 60_000 }, async () => {

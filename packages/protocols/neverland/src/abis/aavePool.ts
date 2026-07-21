@@ -1,5 +1,5 @@
 // ABI origin: vendored (ADR 0007)
-//   source: Aave V3 core contracts — IPool interface
+//   source: Aave V3 core contracts — IPool interface plus aToken IAToken events
 //   upstream: https://github.com/aave/aave-v3-core/blob/master/contracts/interfaces/IPool.sol
 //   commit: master as of 2026-07-16
 //   verification: function/event signatures exercised live against the Neverland Pool
@@ -20,4 +20,10 @@ export const AavePoolAbi = parseAbi([
   // on-chain receipts
   "event Supply(address indexed reserve, address user, address indexed onBehalfOf, uint256 amount, uint16 indexed referralCode)",
   "event Withdraw(address indexed reserve, address indexed user, address indexed to, uint256 amount)",
+]);
+
+export const ATokenAbi = parseAbi([
+  "event Transfer(address indexed from, address indexed to, uint256 value)",
+  "event Mint(address indexed caller, address indexed onBehalfOf, uint256 value, uint256 balanceIncrease, uint256 index)",
+  "event Burn(address indexed from, address indexed target, uint256 value, uint256 balanceIncrease, uint256 index)",
 ]);
